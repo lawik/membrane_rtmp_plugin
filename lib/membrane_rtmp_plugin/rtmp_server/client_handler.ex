@@ -68,6 +68,10 @@ defmodule Membrane.RTMPServer.ClientHandler do
 
   @optional_callbacks handle_metadata: 2
 
+  # Until the client publishes, only a handful of small command messages is expected, so a
+  # client that makes us buffer more than this (e.g. by never completing its messages) is dropped.
+  @max_pre_publish_buffered_bytes 1_048_576
+
   defguardp is_metadata_message(message)
             when is_struct(message, Messages.OnMetaData) or
                    is_struct(message, Messages.SetDataFrame)
@@ -170,8 +174,20 @@ defmodule Membrane.RTMPServer.ClientHandler do
   defp handle_data(data, state) do
     data
     |> MessageParser.parse_packet_messages(state.message_parser_state)
+    |> check_buffered_bytes(state)
     |> handle_parse_result(state)
   end
+
+  defp check_buffered_bytes({_messages, message_parser_state} = parse_result, state) do
+    if state.message_handler_state.publish_msg == nil and
+         MessageParser.buffered_bytes(message_parser_state) > @max_pre_publish_buffered_bytes do
+      {:error, :too_much_data_buffered_before_publish}
+    else
+      parse_result
+    end
+  end
+
+  defp check_buffered_bytes(parse_result, _state), do: parse_result
 
   defp handle_parse_result({:error, reason}, state) do
     Logger.warning(
@@ -185,6 +201,12 @@ defmodule Membrane.RTMPServer.ClientHandler do
   defp handle_parse_result({messages, message_parser_state}, state) do
     {message_handler_state, events} =
       MessageHandler.handle_client_messages(messages, state.message_handler_state)
+
+    state = %{
+      state
+      | message_parser_state: message_parser_state,
+        message_handler_state: message_handler_state
+    }
 
     state =
       if message_handler_state.publish_msg != nil and not state.notified_about_client? do
@@ -239,12 +261,7 @@ defmodule Membrane.RTMPServer.ClientHandler do
 
     request_data(state)
 
-    {:noreply,
-     %{
-       state
-       | message_parser_state: message_parser_state,
-         message_handler_state: message_handler_state
-     }}
+    {:noreply, state}
   end
 
   defp handle_event(event, state) do
@@ -291,7 +308,12 @@ defmodule Membrane.RTMPServer.ClientHandler do
   end
 
   defp request_data(state) do
-    if state.buffers_demanded > 0 or state.published? == false do
+    # Once the client has sent `publish`, nothing is read from the socket until a consumer
+    # demands data (the RTMP handshake is paused at this point anyway), so that the media sent
+    # by a client nobody is interested in stays in the socket buffers instead of being parsed
+    # and buffered in memory without any limit.
+    if state.buffers_demanded > 0 or
+         (not state.published? and state.message_handler_state.publish_msg == nil) do
       if state.use_ssl? do
         :ssl.setopts(state.socket, active: :once)
       else

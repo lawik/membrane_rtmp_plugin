@@ -1,7 +1,7 @@
 defmodule Membrane.RTMP.MessageParserTest do
   use ExUnit.Case, async: true
 
-  alias Membrane.RTMP.{Handshake, MessageParser}
+  alias Membrane.RTMP.{Handshake, Header, MessageParser}
 
   @fixture "test/fixtures/rtmp/blackmagic_4k_live.chunks.bin"
   @handshake_size 1536
@@ -41,6 +41,27 @@ defmodule Membrane.RTMP.MessageParserTest do
 
     assert {:error, {:invalid_handshake_step, :c0_c1}} =
              MessageParser.parse_packet_messages(malformed_c0_c1, parser)
+  end
+
+  test "counts the bytes buffered for incomplete chunks and messages" do
+    parser =
+      MessageParser.init(Handshake.init_server())
+      |> Map.merge(%{state_machine: :connecting, handshake: nil})
+
+    assert MessageParser.buffered_bytes(parser) == 0
+
+    header =
+      Header.new(chunk_stream_id: 3, type_id: 20, body_size: 1000, stream_id: 1)
+      |> Header.serialize()
+
+    # a complete 128 byte chunk and 100 bytes of the next one
+    {[], parser} =
+      MessageParser.parse_packet_messages(
+        header <> <<0::size(128 * 8)>> <> <<0b11::2, 3::6>> <> <<0::size(100 * 8)>>,
+        parser
+      )
+
+    assert MessageParser.buffered_bytes(parser) == 128 + 1 + 100
   end
 
   defp decode_chunks(data) do

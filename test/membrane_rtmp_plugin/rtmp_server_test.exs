@@ -58,6 +58,35 @@ defmodule Membrane.RTMPServerTest do
     assert Process.alive?(ctx.server)
   end
 
+  test "a client that never completes its messages before publishing is disconnected", ctx do
+    socket = connect(ctx.port)
+    :ok = :gen_tcp.send(socket, valid_c0_c1())
+
+    assert {:ok, <<@rtmp_version, s1::binary-size(@handshake_size), _s2::binary>>} =
+             :gen_tcp.recv(socket, @s0_s1_s2_size, @recv_timeout)
+
+    :ok = :gen_tcp.send(socket, s1)
+
+    # a command message that is announced to be 8 MB long, of which only 2 MB is ever sent
+    chunk_size = 128
+
+    header =
+      Membrane.RTMP.Header.new(
+        chunk_stream_id: 3,
+        type_id: 20,
+        body_size: 8 * 1_048_576,
+        stream_id: 1
+      )
+      |> Membrane.RTMP.Header.serialize()
+
+    body = Membrane.RTMP.Message.chunk_payload(<<0::size(2 * 1_048_576 * 8)>>, 3, chunk_size)
+    :ok = :gen_tcp.send(socket, [header | body])
+
+    assert {:error, :closed} = :gen_tcp.recv(socket, 0, @recv_timeout)
+    refute_received {:DOWN, _ref, :process, _pid, _reason}
+    assert Process.alive?(ctx.server)
+  end
+
   defp connect(port) do
     {:ok, socket} = :gen_tcp.connect(~c"localhost", port, [:binary, active: false])
     socket

@@ -93,6 +93,17 @@ defmodule Membrane.RTMP.MessageParser do
   end
 
   @doc """
+  Returns the number of bytes buffered by the parser, that is the bytes of an incomplete chunk
+  and of the messages that haven't been fully received yet.
+  """
+  @spec buffered_bytes(t()) :: non_neg_integer()
+  def buffered_bytes(%__MODULE__{buffer: buffer, partial_messages: partial_messages}) do
+    Enum.reduce(partial_messages, byte_size(buffer), fn {_chunk_stream_id, partial}, acc ->
+      acc + partial.bytes_received
+    end)
+  end
+
+  @doc """
   Generates a list of the following transaction tx_ids.
 
   Updates the internal transaction id counter so that
