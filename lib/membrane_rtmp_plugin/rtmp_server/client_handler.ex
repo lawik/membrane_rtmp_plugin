@@ -68,6 +68,8 @@ defmodule Membrane.RTMPServer.ClientHandler do
 
   @optional_callbacks handle_metadata: 2
 
+  @ssl_handshake_timeout 10_000
+
   defguardp is_metadata_message(message)
             when is_struct(message, Messages.OnMetaData) or
                    is_struct(message, Messages.SetDataFrame)
@@ -95,6 +97,7 @@ defmodule Membrane.RTMPServer.ClientHandler do
      %{
        socket: opts.socket,
        use_ssl?: opts.use_ssl?,
+       ssl_handshake_opts: Map.get(opts, :ssl_handshake_opts, []),
        message_parser_state: message_parser_state,
        message_handler_state: message_handler_state,
        handler: nil,
@@ -138,6 +141,31 @@ defmodule Membrane.RTMPServer.ClientHandler do
   end
 
   @impl true
+  def handle_info(:control_granted, %{use_ssl?: true} = state) do
+    case :ssl.handshake(state.socket, state.ssl_handshake_opts, @ssl_handshake_timeout) do
+      {:ok, socket} ->
+        Logger.debug("SSL handshake successful")
+
+        state = %{
+          state
+          | socket: socket,
+            message_handler_state: %{state.message_handler_state | socket: socket}
+        }
+
+        request_data(state)
+        {:noreply, state}
+
+      {:error, reason} ->
+        Logger.warning(
+          "SSL handshake with #{inspect(peername(state))} failed: #{inspect(reason)}, closing the connection"
+        )
+
+        close_socket(state)
+        {:stop, :normal, state}
+    end
+  end
+
+  @impl true
   def handle_info(:control_granted, state) do
     request_data(state)
     {:noreply, state}
@@ -154,7 +182,7 @@ defmodule Membrane.RTMPServer.ClientHandler do
   def handle_info({:client_timeout, app, stream_key}, state) do
     if not state.published? do
       Logger.warning("No demand made for client /#{app}/#{stream_key}, terminating connection.")
-      :gen_tcp.close(state.socket)
+      close_socket(state)
     end
 
     {:noreply, state}

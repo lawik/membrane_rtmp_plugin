@@ -36,6 +36,9 @@ defmodule Membrane.RTMPServer.Listener do
     :log_level
   ]
 
+  # how long to wait before accepting again once the system ran out of file descriptors or ports
+  @accept_retry_delay 100
+
   @spec run(
           options :: %{
             use_ssl?: boolean(),
@@ -45,9 +48,26 @@ defmodule Membrane.RTMPServer.Listener do
             port: non_neg_integer(),
             ssl_options: keyword()
           }
-        ) :: no_return()
+        ) :: :ok | no_return()
   def run(options) do
     options = Map.merge(options, %{socket_module: if(options.use_ssl?, do: :ssl, else: :gen_tcp)})
+
+    ssl_handshake_opts =
+      if options.use_ssl? do
+        ssl_handshake_opts =
+          options
+          |> Map.get(:ssl_options, [])
+          |> Keyword.take(@ssl_handshake_opts)
+          |> Keyword.put(:verify, :verify_none)
+          |> Keyword.put(:fail_if_no_peer_cert, false)
+
+        Logger.debug("SSL handshake options: #{inspect(ssl_handshake_opts)}")
+        ssl_handshake_opts
+      else
+        []
+      end
+
+    options = Map.put(options, :ssl_handshake_opts, ssl_handshake_opts)
 
     listen_options =
       if options.use_ssl? do
@@ -84,48 +104,40 @@ defmodule Membrane.RTMPServer.Listener do
   end
 
   defp accept_loop(socket, options) do
-    client =
-      case options.socket_module do
-        :gen_tcp ->
-          {:ok, client} = :gen_tcp.accept(socket)
-          client
+    case accept(socket, options) do
+      {:ok, client} ->
+        start_client_handler(client, options)
+        accept_loop(socket, options)
 
-        :ssl ->
-          {:ok, client} = :ssl.transport_accept(socket)
-          Logger.debug("SSL transport accept successful, starting handshake...")
+      {:error, :closed} ->
+        Logger.error("RTMP listen socket has been closed, stopping the listener")
+        :ok
 
-          ssl_handshake_opts =
-            options
-            |> Map.get(:ssl_options, [])
-            |> Keyword.take(@ssl_handshake_opts)
+      {:error, reason} when reason in [:emfile, :enfile, :system_limit] ->
+        Logger.error(
+          "Couldn't accept RTMP client connection due to: #{inspect(reason)}, retrying in #{@accept_retry_delay}ms"
+        )
 
-          ssl_handshake_opts =
-            ssl_handshake_opts
-            |> Keyword.put(:verify, :verify_none)
-            |> Keyword.put(:fail_if_no_peer_cert, false)
+        Process.sleep(@accept_retry_delay)
+        accept_loop(socket, options)
 
-          Logger.debug("SSL handshake options: #{inspect(ssl_handshake_opts)}")
-
-          case :ssl.handshake(client, ssl_handshake_opts, 10_000) do
-            {:ok, ssl_socket} ->
-              Logger.info("SSL handshake successful")
-              ssl_socket
-
-            {:error, reason} ->
-              Logger.error("SSL handshake failed: #{inspect(reason)}")
-              :ssl.close(client)
-              accept_loop(socket, options)
-          end
-      end
-
-    start_client_handler(client, options)
-    accept_loop(socket, options)
+      {:error, reason} ->
+        Logger.warning("Couldn't accept RTMP client connection due to: #{inspect(reason)}")
+        accept_loop(socket, options)
+    end
   end
+
+  defp accept(socket, %{socket_module: :gen_tcp}), do: :gen_tcp.accept(socket)
+
+  # the SSL handshake itself is performed by the client handler, so that a client that
+  # stalls it can't block the accept loop
+  defp accept(socket, %{socket_module: :ssl}), do: :ssl.transport_accept(socket)
 
   defp start_client_handler(client, options) do
     client_handler_opts = [
       socket: client,
       use_ssl?: options.use_ssl?,
+      ssl_handshake_opts: options.ssl_handshake_opts,
       server: options.server,
       handle_new_client: options.handle_new_client,
       client_timeout: options.client_timeout

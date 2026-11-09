@@ -58,6 +58,49 @@ defmodule Membrane.RTMPServerTest do
     assert Process.alive?(ctx.server)
   end
 
+  describe "RTMPS" do
+    @describetag :tmp_dir
+
+    setup %{tmp_dir: tmp_dir} do
+      cert_path = Path.join(tmp_dir, "test_cert.pem")
+      key_path = Path.join(tmp_dir, "test_key.pem")
+      generate_test_certificates(cert_path, key_path)
+
+      {:ok, server} =
+        Membrane.RTMPServer.start_link(
+          port: 0,
+          use_ssl?: true,
+          ssl_options: [certfile: cert_path, keyfile: key_path],
+          handle_new_client: fn _client_ref, _app, _stream_key ->
+            Membrane.RTMP.Source.ClientHandlerImpl
+          end
+        )
+
+      %{ssl_server: server, ssl_port: Membrane.RTMPServer.get_port(server)}
+    end
+
+    test "a client stalling the TLS handshake doesn't block other clients", ctx do
+      # connects on the TCP level, but never sends the ClientHello
+      stalled = connect(ctx.ssl_port)
+
+      assert {:ok, healthy} =
+               :ssl.connect(
+                 ~c"localhost",
+                 ctx.ssl_port,
+                 [:binary, active: false, verify: :verify_none],
+                 @recv_timeout
+               )
+
+      :ok = :ssl.send(healthy, valid_c0_c1())
+
+      assert {:ok, <<@rtmp_version, _rest::binary>>} =
+               :ssl.recv(healthy, @s0_s1_s2_size, @recv_timeout)
+
+      :ok = :gen_tcp.close(stalled)
+      assert Process.alive?(ctx.ssl_server)
+    end
+  end
+
   defp connect(port) do
     {:ok, socket} = :gen_tcp.connect(~c"localhost", port, [:binary, active: false])
     socket
@@ -69,4 +112,23 @@ defmodule Membrane.RTMPServerTest do
   end
 
   defp malformed_c0_c1(), do: <<@invalid_rtmp_version, 0::size(@handshake_size * 8)>>
+
+  defp generate_test_certificates(cert_path, key_path) do
+    {_result, 0} = System.cmd("openssl", ["genrsa", "-out", key_path, "2048"])
+
+    {_result, 0} =
+      System.cmd("openssl", [
+        "req",
+        "-new",
+        "-x509",
+        "-key",
+        key_path,
+        "-out",
+        cert_path,
+        "-days",
+        "1",
+        "-subj",
+        "/C=US/ST=Test/L=Test/O=Test/CN=localhost"
+      ])
+  end
 end
