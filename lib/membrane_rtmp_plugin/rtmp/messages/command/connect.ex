@@ -54,8 +54,10 @@ defmodule Membrane.RTMP.Messages.Connect do
 
   @names ["connect", "@connect"]
 
+  # the app name is used as a string everywhere, so anything else sent by a client is rejected
   @impl true
-  def from_data([name, tx_id, properties]) when name in @names do
+  def from_data([name, tx_id, %{"app" => app} = properties])
+      when name in @names and is_binary(app) do
     # We take keys according to RFC, but preserve all extra ones
     # https://github.com/melpon/rfc/blob/master/rtmp.md#7211-connect
     {rfc, extra} = Map.split(properties, Map.keys(@attributes_to_keys))

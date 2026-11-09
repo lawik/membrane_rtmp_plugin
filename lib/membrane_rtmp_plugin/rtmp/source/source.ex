@@ -191,7 +191,7 @@ defmodule Membrane.RTMP.Source do
       when app == state.app and stream_key == state.stream_key do
     # Duplicate connection on same app/stream_key - ignore it
     Logger.warning(
-      "Duplicate client connection detected on /#{app}/#{stream_key}, discarding #{inspect(client_ref)}; already handling #{inspect(state.client_ref)}"
+      "Duplicate client connection detected on /#{inspect(app)}/#{inspect(stream_key)}, discarding #{inspect(client_ref)}; already handling #{inspect(state.client_ref)}"
     )
 
     {[], state}
@@ -204,7 +204,7 @@ defmodule Membrane.RTMP.Source do
         %{mode: :builtin_server} = state
       ) do
     # Connection on wrong app/stream_key
-    Logger.warning("Unexpected client connected on /#{app}/#{stream_key}")
+    Logger.warning("Unexpected client connected on /#{inspect(app)}/#{inspect(stream_key)}")
     {[], state}
   end
 

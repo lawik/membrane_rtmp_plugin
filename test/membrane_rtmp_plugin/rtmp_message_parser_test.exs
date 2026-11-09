@@ -1,7 +1,7 @@
 defmodule Membrane.RTMP.MessageParserTest do
   use ExUnit.Case, async: true
 
-  alias Membrane.RTMP.{Handshake, MessageParser}
+  alias Membrane.RTMP.{AMF0, Handshake, Header, MessageParser, Messages}
 
   @fixture "test/fixtures/rtmp/blackmagic_4k_live.chunks.bin"
   @handshake_size 1536
@@ -41,6 +41,53 @@ defmodule Membrane.RTMP.MessageParserTest do
 
     assert {:error, {:invalid_handshake_step, :c0_c1}} =
              MessageParser.parse_packet_messages(malformed_c0_c1, parser)
+  end
+
+  test "returns an error instead of raising on a command message with arguments of a wrong type" do
+    parser =
+      MessageParser.init(Handshake.init_server())
+      |> Map.merge(%{state_machine: :connecting, handshake: nil})
+
+    assert {[{_header, %Messages.Publish{stream_key: "key"}}], _parser} =
+             ["publish", 1.0, :null, "key", "live"]
+             |> command_chunk()
+             |> MessageParser.parse_packet_messages(parser)
+
+    for stream_key <- [%{}, 1.0] do
+      assert {:error, {:invalid_message, 20, %FunctionClauseError{}}} =
+               ["publish", 1.0, :null, stream_key, "live"]
+               |> command_chunk()
+               |> MessageParser.parse_packet_messages(parser)
+    end
+
+    assert {:error, {:invalid_message, 20, %FunctionClauseError{}}} =
+             ["connect", 1.0, %{"app" => %{}, "tcUrl" => "rtmp://localhost/live"}]
+             |> command_chunk()
+             |> MessageParser.parse_packet_messages(parser)
+
+    # empty command body
+    assert {:error, {:invalid_message, 20, _error}} =
+             MessageParser.parse_packet_messages(chunk(20, <<>>), parser)
+  end
+
+  test "returns an error instead of raising on a message of an unknown type" do
+    parser =
+      MessageParser.init(Handshake.init_server())
+      |> Map.merge(%{state_machine: :connecting, handshake: nil})
+
+    # Abort Message
+    assert {:error, {:invalid_message, 2, _error}} =
+             MessageParser.parse_packet_messages(chunk(2, <<0, 0, 0, 3>>), parser)
+  end
+
+  defp command_chunk(command), do: chunk(20, AMF0.Encoder.encode(command))
+
+  defp chunk(type_id, body) do
+    header =
+      Header.new(chunk_stream_id: 3, type_id: type_id, body_size: byte_size(body), stream_id: 1)
+      |> Header.serialize()
+
+    header <> body
   end
 
   defp decode_chunks(data) do

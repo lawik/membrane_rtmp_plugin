@@ -44,6 +44,30 @@ defmodule Membrane.RTMP.MessagesTest do
              Publish.from_data(["publish", 6, :null, "stream_key"])
   end
 
+  test "Publish rejects a stream key that is not a string" do
+    for stream_key <- [%{}, [1.0, 2.0], 1.0, :null] do
+      assert_raise FunctionClauseError, fn ->
+        Publish.from_data(["publish", 5, :null, stream_key, "live"])
+      end
+
+      assert_raise FunctionClauseError, fn ->
+        Publish.from_data(["publish", 6, :null, stream_key])
+      end
+    end
+  end
+
+  test "Connect rejects an app that is not a string" do
+    for app <- [%{}, [1.0, 2.0], 1.0, :null] do
+      assert_raise FunctionClauseError, fn ->
+        Connect.from_data(["connect", 1, %{"app" => app, "tcUrl" => "rtmp://localhost/live"}])
+      end
+    end
+
+    assert_raise FunctionClauseError, fn ->
+      Connect.from_data(["connect", 1, :null])
+    end
+  end
+
   test "ReleaseStream accepts @releaseStream alias" do
     assert ReleaseStream.from_data(["@releaseStream", 7, :null, "stream_key"]) ==
              ReleaseStream.from_data(["releaseStream", 7, :null, "stream_key"])

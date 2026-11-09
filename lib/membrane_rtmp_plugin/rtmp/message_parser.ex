@@ -109,6 +109,7 @@ defmodule Membrane.RTMP.MessageParser do
           {Handshake.Step.t() | :need_more_data | :handshake_done | binary(), t()}
           | {Header.t(), Message.t(), t()}
           | {:error, {:invalid_handshake_step, Handshake.Step.handshake_type_t()}, t()}
+          | {:error, {:invalid_message, type_id :: non_neg_integer(), Exception.t()}, t()}
   def handle_packet(packet, state)
 
   def handle_packet(
@@ -129,6 +130,9 @@ defmodule Membrane.RTMP.MessageParser do
         )
 
         {:need_more_data, %__MODULE__{state | buffer: <<>>, partial_messages: %{}}}
+
+      {:error, {:invalid_message, _type_id, _error} = reason} ->
+        {:error, reason, state}
 
       {:complete, header, message, rest, new_partial_messages} ->
         # Complete message - update_state_with_message will handle previous_headers
@@ -225,6 +229,9 @@ defmodule Membrane.RTMP.MessageParser do
 
         {:need_more_data, %__MODULE__{state | buffer: <<>>, partial_messages: %{}}}
 
+      {:error, {:invalid_message, _type_id, _error} = reason} ->
+        {:error, reason, state}
+
       {:complete, header, message, rest, new_partial_messages} ->
         # Complete message - update_state_with_message will handle previous_headers
         state =
@@ -294,8 +301,9 @@ defmodule Membrane.RTMP.MessageParser do
         if bytes_to_read >= header.body_size do
           # Message is complete in a single chunk
           # Don't update previous_headers here - update_state_with_message will handle it
-          message = Message.deserialize_message(header.type_id, chunk)
-          {:complete, header, message, rest, partial_messages}
+          with {:ok, message} <- deserialize_message(header.type_id, chunk) do
+            {:complete, header, message, rest, partial_messages}
+          end
         else
           # Message spans multiple chunks, store as partial
           # Also update previous_headers so Type 3 continuation headers can be deserialized
@@ -348,11 +356,12 @@ defmodule Membrane.RTMP.MessageParser do
     if new_bytes_received >= partial.header.body_size do
       # Message is now complete
       complete_body = IO.iodata_to_binary(new_body_chunks)
-      message = Message.deserialize_message(partial.header.type_id, complete_body)
       new_partial_messages = Map.delete(partial_messages, header.chunk_stream_id)
 
-      # Use the original header from when the message started
-      {:complete, partial.header, message, rest, new_partial_messages}
+      with {:ok, message} <- deserialize_message(partial.header.type_id, complete_body) do
+        # Use the original header from when the message started
+        {:complete, partial.header, message, rest, new_partial_messages}
+      end
     else
       # Still partial, continue buffering
       updated_partial = %{
@@ -366,6 +375,15 @@ defmodule Membrane.RTMP.MessageParser do
 
       {:partial, rest, new_partial_messages, :no_change}
     end
+  end
+
+  # The message comes from an untrusted peer, so a body that can't be deserialized (unknown
+  # message type, malformed AMF, arguments of a wrong type) is a protocol error that should
+  # end the connection instead of crashing the process handling it.
+  defp deserialize_message(type_id, body) do
+    {:ok, Message.deserialize_message(type_id, body)}
+  rescue
+    error -> {:error, {:invalid_message, type_id, error}}
   end
 
   # in case of client interception the Publish message indicates successful connection

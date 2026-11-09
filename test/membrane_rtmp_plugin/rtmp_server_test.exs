@@ -58,6 +58,34 @@ defmodule Membrane.RTMPServerTest do
     assert Process.alive?(ctx.server)
   end
 
+  test "publish with a stream key that is not a string closes only the offending connection",
+       ctx do
+    socket = connect(ctx.port)
+    :ok = :gen_tcp.send(socket, valid_c0_c1())
+
+    assert {:ok, <<@rtmp_version, s1::binary-size(@handshake_size), _s2::binary>>} =
+             :gen_tcp.recv(socket, @s0_s1_s2_size, @recv_timeout)
+
+    :ok = :gen_tcp.send(socket, s1)
+
+    body = Membrane.RTMP.AMF0.Encoder.encode(["publish", 1.0, :null, %{}, "live"])
+
+    header =
+      Membrane.RTMP.Header.new(
+        chunk_stream_id: 3,
+        type_id: 20,
+        body_size: byte_size(body),
+        stream_id: 1
+      )
+      |> Membrane.RTMP.Header.serialize()
+
+    :ok = :gen_tcp.send(socket, header <> body)
+
+    assert {:error, :closed} = :gen_tcp.recv(socket, 0, @recv_timeout)
+    refute_received {:DOWN, _ref, :process, _pid, _reason}
+    assert Process.alive?(ctx.server)
+  end
+
   defp connect(port) do
     {:ok, socket} = :gen_tcp.connect(~c"localhost", port, [:binary, active: false])
     socket

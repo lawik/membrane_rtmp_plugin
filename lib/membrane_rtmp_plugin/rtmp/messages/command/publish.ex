@@ -19,12 +19,14 @@ defmodule Membrane.RTMP.Messages.Publish do
 
   @names ["publish", "@publish"]
 
+  # the stream key is used as a string everywhere, so anything else sent by a client is rejected
   @impl true
-  def from_data([name, tx_id, :null, stream_key, publish_type]) when name in @names do
+  def from_data([name, tx_id, :null, stream_key, publish_type])
+      when name in @names and is_binary(stream_key) do
     %__MODULE__{tx_id: tx_id, stream_key: stream_key, publish_type: publish_type}
   end
 
-  def from_data([name, tx_id, :null, stream_key]) when name in @names do
+  def from_data([name, tx_id, :null, stream_key]) when name in @names and is_binary(stream_key) do
     %__MODULE__{tx_id: tx_id, stream_key: stream_key}
   end
 
