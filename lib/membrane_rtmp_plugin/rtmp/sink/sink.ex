@@ -268,7 +268,7 @@ defmodule Membrane.RTMP.Sink do
 
   defp try_connect(%{attempts: attempts, max_attempts: max_attempts} = state)
        when max_attempts != :infinity and attempts >= max_attempts do
-    raise "failed to connect to '#{state.rtmp_url}' #{attempts} times, aborting"
+    raise "failed to connect to '#{redact_stream_key(state.rtmp_url)}' #{attempts} times, aborting"
   end
 
   defp try_connect(state) do
@@ -276,13 +276,15 @@ defmodule Membrane.RTMP.Sink do
 
     case Native.try_connect(state.native) do
       :ok ->
-        Membrane.Logger.debug("Correctly initialized connection with: #{state.rtmp_url}")
+        Membrane.Logger.debug(
+          "Correctly initialized connection with: #{redact_stream_key(state.rtmp_url)}"
+        )
 
         state
 
       {:error, error} when error in [:econnrefused, :etimedout] ->
         Membrane.Logger.warning(
-          "Connection to #{state.rtmp_url} refused, retrying in #{@connection_attempt_interval}ms"
+          "Connection to #{redact_stream_key(state.rtmp_url)} refused, retrying in #{@connection_attempt_interval}ms"
         )
 
         Process.sleep(@connection_attempt_interval)
@@ -290,8 +292,24 @@ defmodule Membrane.RTMP.Sink do
         try_connect(state)
 
       {:error, reason} ->
-        raise "failed to connect to '#{state.rtmp_url}': #{inspect(reason)}"
+        raise "failed to connect to '#{redact_stream_key(state.rtmp_url)}': #{inspect(reason)}"
     end
+  end
+
+  # Whatever follows the app in the URL's path is the stream key, i.e. the publishing credential,
+  # which shouldn't end up in logs or crash reports. The query is dropped for the same reason.
+  defp redact_stream_key(rtmp_url) do
+    uri = URI.parse(rtmp_url)
+
+    path =
+      case Path.split(uri.path || "/") do
+        [root, app, _stream_key | _rest] -> Path.join([root, app, "<redacted>"])
+        _no_stream_key -> uri.path
+      end
+
+    query = if uri.query, do: "<redacted>"
+
+    URI.to_string(%{uri | path: path, query: query})
   end
 
   defp build_demand(%{frame_buffer: frame_buffer}) do
